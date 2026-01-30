@@ -1,0 +1,6 @@
+rootProject.name = 'onol'
+
+include 'onol-core' // 공통 DTO, Utils, Adapter 인터페이스
+//include 'onol-collector' // 패킷 수집 및 Kafka 전송
+//include 'onol-analyzer' // 분석 및 저장
+//include 'onol-api' // 시각화 API

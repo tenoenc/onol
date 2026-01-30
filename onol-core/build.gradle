@@ -1,0 +1,25 @@
+plugins {
+    id 'org.springframework.boot'
+}
+
+dependencies {
+    // Core (Slf4j 포함)
+    implementation 'org.springframework.boot:spring-boot-starter'
+
+    // ByteBuf 및 Buffer 유틸리티 (RFC 표준 파싱용)
+    implementation 'io.netty:netty-buffer:4.1.101.Final'
+
+    // Packet Capture Library (Pcap 핸들링 및 Replay 테스트용)
+    implementation 'org.pcap4j:pcap4j-core:1.8.2'
+    implementation 'org.pcap4j:pcap4j-packetfactory-static:1.8.2'
+}
+
+// Core 모듈은 실행 파일(bootJar)을 만들지 않음
+bootJar {
+    enabled = false
+}
+
+// 대신 일반 라이브러리 JAR(jar)를 만듦
+jar {
+    enabled = true
+}
