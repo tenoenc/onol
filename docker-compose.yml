@@ -1,0 +1,72 @@
+services:
+  # Kafka와 함께 동작하여
+  # 클러스터의 상태(브로커가 살아있는지, 누가 리더인지)를 관리해 줄 매니저
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: onol-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000 # 주키퍼가 살아있다고 신호를 보내는 주기(2초)
+
+  # 데이터 파이프라인
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: onol-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # 클라이언트에게 "나한테 접속하려면 이 주소로 와"라고 알려주는 주소
+      # `PLAINTEXT://localhost:9092`: 개발자 PC(Host)에서 Spring Boot 앱이 접속할 때 사용
+      # `PLAINTEXT_INTERNAL://kafka:29092`: 도커 내부의 다른 컨테이너가 Kafka를 찾을 때 사용
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      # 로컬 디스크 보호
+      KAFKA_LOG_RETENTION_HOURS: 1 # 메시지 보관 1시간
+      KAFKA_LOG_RETENTION_BYTES: 1073741824 # 1GB 제한
+
+      # JVM 힙 메모리 고정
+      KAFKA_HEAP_OPTS: "-Xmx500M -Xms500M"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M # PC 과부하 방지
+
+  timescaledb:
+    # 시계열 데이터 처리에 특화된 확장팩이 설치된 버전 사용
+    image: timescale/timescaledb:latest-pg14
+    container_name: onol-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: onol_db
+      # 쓰기 성능 최우선 (데이터 일부 유실 허용)
+      POSTGRES_SYNCHRONOUS_COMMIT: "off"
+    volumes:
+      - ./infra/init-sql:/docker-entrypoint-initdb.d
+      - ./data/timescaledb:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: onol-redis
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          # 실시간 속도계(BPS/PPS)와 최근 1분 데이터만 저장하므로 용량이 클 필요 없음
+          memory: 256M
