@@ -1,0 +1,7 @@
+server:
+  port: 8081 # Collector Port
+
+spring:
+  application:
+    name: onol-collector
+
