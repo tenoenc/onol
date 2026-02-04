@@ -5,3 +5,18 @@ spring:
   application:
     name: onol-collector
 
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: localhost:9092
+      bindings:
+        packet-out-0:
+          destination: raw-packet-topic
+          content-type: application/json
+
+onol:
+  collector:
+    interface-name: \Device\NPF_{6D04D481-730C-4478-B5D7-E5232B4FAE3B} # 캡처할 인터페이스 이름
+    snaplen: 65536
+    timeout: 10
