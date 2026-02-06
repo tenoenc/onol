@@ -1,0 +1,6 @@
+server:
+  port: 8082 # Analyzer Port (수집기는 8081)
+
+spring:
+  application:
+    name: onol-analyzer

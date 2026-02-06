@@ -1,0 +1,24 @@
+plugins {
+    id 'org.springframework.boot'
+}
+
+dependencies {
+    implementation project(':onol-core')
+
+    // 1. Kafka Consumer
+    implementation 'org.springframework.cloud:spring-cloud-stream-binder-kafka'
+    implementation 'org.springframework.cloud:spring-cloud-function-context:4.1.3'
+    implementation 'org.springframework.cloud:spring-cloud-function-core:4.1.3'
+
+    // 2. Database (PostgreSQL/TimescaleDB)
+    // JPA 대신 가볍고 빠른 JDBC 사용 (Bulk Insert)
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // 3. Redis (실시간 집계 및 세션 추적용)
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+
+    // 4. GeoIP2 (IP -> Country 변환)
+    implementation 'com.maxmind.geoip2:geoip2:4.0.1'
+}
+
