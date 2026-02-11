@@ -4,3 +4,38 @@ server:
 spring:
   application:
     name: onol-analyzer
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/onol_db
+    username: postgres
+    password: 1234
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  cloud:
+    function:
+      definition: processPacket
+
+    stream:
+      kafka:
+        binder:
+          brokers: localhost:9092
+        bindings:
+          processPacket-in-0:
+            consumer:
+              # 평소에는 읽던 곳부터 읽지만, 오프셋 정보가 없을 땐 가장 과거 데이터부터 가져와서 '데이터 유실'을 막음
+              auto-offset-reset: earliest
+
+      bindings:
+        processPacket-in-0: # 코드의 Consumer 함수 이름 (processPacket)과 매핑됨
+          destination: raw-packet-topic
+          group: analyzer-group # Consumer Group (스케일 아웃 및 offset 관리)
+          consumer:
+            batch-mode: true # 하나씩 말고 뭉텅이로 받음 (성능 최적화)
+            max-attempts: 3
+
+        # 실패한 메시지를 보낼 출구(DLQ) 정의
+        sendToDlq-out-0:
+          destination: packet-dlq-topic # Kafka에 이 토픽이 자동 생성됨
