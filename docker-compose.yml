@@ -59,3 +59,14 @@ services:
         limits:
           cpus: '0.50'
           memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: onol-redis
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          # 실시간 속도계(BPS/PPS)와 최근 1분 데이터만 저장하므로 용량이 클 필요 없음
+          memory: 256M
