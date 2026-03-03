@@ -70,3 +70,19 @@ services:
         limits:
           # 실시간 속도계(BPS/PPS)와 최근 1분 데이터만 저장하므로 용량이 클 필요 없음
           memory: 256M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: onol-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: 1234
+    depends_on:
+      - timescaledb
+    volumes:
+      - ./data/grafana:/var/lib/grafana # 대시보드 설정 저장
+    deploy:
+      resources:
+        limits:
+          memory: 256M
