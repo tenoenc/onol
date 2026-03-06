@@ -18,7 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Slf4j
@@ -55,31 +57,39 @@ public class PacketService implements RecordPacketUseCase {
     }
 
     private void trackSessions(List<PacketEvent> events) {
-        for (PacketEvent event : events) {
-            if ("TCP".equalsIgnoreCase(event.protocol())) {
-                // 1. 키 생성
-                String key = tcpSessionTracker.generateFlowKey(event);
+        // 1. TCP 패킷만 골라서 Flow Key 미리 생성
+        List<PacketEvent> tcpEvents = events.stream()
+                .filter(e -> "TCP".equalsIgnoreCase(e.protocol()))
+                .toList();
+        if (tcpEvents.isEmpty()) return;
 
-                // 2. 현재 상태 조회
-                String currentState = sessionStatePort.getSessionState(key);
+        List<String> flowKeys = tcpEvents.stream()
+                .map(tcpSessionTracker::generateFlowKey)
+                .toList();
 
-                // 3. 다음 상태 계산
-                String nextState = tcpSessionTracker.determineNextState(currentState, event);
+        // 2. Redis 한 번만 갔다 오기
+        Map<String, String> currentStates = sessionStatePort.getSessionStates(flowKeys);
+        Map<String, String> updates = new HashMap<>();
 
-                // 4. 상태 저장/삭제
-                if ("CLOSED".equals(nextState)) {
-                    sessionStatePort.removeSessionState(key);
-                } else if (!nextState.equals(currentState)) {
-                    // 상태가 변했을 때만 갱신
-                    sessionStatePort.updateSessionState(key, nextState);
-                }
+        // 3. 메모리에서 상태 계산 (매우 빠름)
+        for (int i = 0; i < tcpEvents.size(); i++) {
+            PacketEvent event = tcpEvents.get(i);
+            String key = flowKeys.get(i);
 
-                // 세션이 막 성립되었거나 종료되었을 때 로그 남기기
-                if ("ESTABLISHED".equals(nextState)) {
-                    log.debug("Connection Established. {} -> {}", event.srcIp(), event.dstIp());
+            // 루프 돌면서 상태가 변할 수 있으므로 updates 맵을 우선 확인 (Batch 내 순서 보장)
+            String currentState = updates.getOrDefault(key, currentStates.get(key));
+            String nextState = tcpSessionTracker.determineNextState(currentState, event);
+
+            if (!nextState.equals(currentState)) {
+                updates.put(key, nextState);
+                if ("ESTABLISHED".equals(nextState) && !"ESTABLISHED".equals(currentState)) {
+                    log.debug("Conn Est: {}", key);
                 }
             }
         }
+
+        // 4. 변경된 것만 모아서 한 방에 저장
+        sessionStatePort.updateSessionStates(updates);
     }
 
     private void detectThreats(List<PacketEvent> events) {

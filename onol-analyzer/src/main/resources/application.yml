@@ -14,6 +14,13 @@ spring:
       maximum-pool-size: 10
       minimum-idle: 2
 
+  jpa: # JPA를 안 쓰더라도 Hibernate/JDBC 설정에 영향을 줄 수 있음
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 5000
+          order_inserts: true
+
   cloud:
     function:
       definition: processPacket
@@ -22,6 +29,11 @@ spring:
       kafka:
         binder:
           brokers: localhost:9092
+          configuration:
+            # 컨슈머 튜닝 (Fetch 튜닝)
+            max.poll.records: 5000 # 한 번에 5000개씩 가져옴 (기존 500 -> 10배)
+            fetch.min.bytes: 1048576 # 최소 1MB 쌓일 때까지 기다렸다 가져옴 (CPU 절약)
+            fetch.max.wait.ms: 500 # 데이터가 적으면 0.5초 기다림
         bindings:
           processPacket-in-0:
             consumer:

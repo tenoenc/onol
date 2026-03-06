@@ -3,13 +3,13 @@ package com.teno.onol.analyzer.domain;
 import com.teno.onol.core.domain.PacketEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -34,40 +34,48 @@ public class PortScanDetector {
     public Set<String> detectScanners(List<PacketEvent> packets) {
         if (packets.isEmpty()) return Set.of();
 
-        // 1. IP별 접속 포트 수집 (Batch 내 집계)
-        return packets.stream()
+        // 1. TCP/UDP만 필터링
+        List<PacketEvent> candidates = packets.stream()
                 .filter(p -> "TCP".equalsIgnoreCase(p.protocol()) || "UDP".equalsIgnoreCase(p.protocol()))
                 .filter(p -> p.srcPort() != 53)
-                .map(event -> checkThreat(event.srcIp(), event.dstPort()))
-                .filter(Objects::nonNull) // null이 아니면 캄지된 IP
-                .collect(Collectors.toSet());
-    }
+                .toList();
 
-    public String checkThreat(String srcIp, int dstPort) {
-        String key = KEY_PREFIX + srcIp;
-        String portStr = String.valueOf(dstPort);
+        if (candidates.isEmpty()) return Set.of();
 
-        try {
-            // 1. Redis Set에 포트 추가 (SADD)
-            Long addedCount = redisTemplate.opsForSet().add(key, portStr);
+        // 2. Redis Pipelining 실행 (비동기 명령 전송)
+        List<Object> pipelineResults = redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
+            RedisSerializer<String> serializer = redisTemplate.getStringSerializer();
 
-            // 2. TTL 갱신 (EXPIRE)
-            redisTemplate.expire(key, DETECTION_WINDOW);
+            for (PacketEvent event : candidates) {
+                byte[] key = serializer.serialize(KEY_PREFIX + event.srcIp());
+                byte[] port = serializer.serialize(String.valueOf(event.dstPort()));
 
-            // 3. 현재 누적 포트 개수 조회 (SCARD)
-            Long distinctPorts = redisTemplate.opsForSet().size(key);
-
-            // 4. 탐지 조건:
-            // - 현재 개수가 임계치와 정확히 일치하고 (distinctPorts == threshold)
-            // - 방금 새로운 포트가 추가되었을 때 (addedCount > 0)
-            // -> 이렇게 해야 21번째, 22번째 포트가 들어올 때 중복 알림을 막을 수 있음
-            if (distinctPorts != null && distinctPorts == threshold && addedCount > 0) {
-                return srcIp;
+                connection.sAdd(key, port); // 1. 추가
+                connection.expire(key, DETECTION_WINDOW.getSeconds()); // 2. 연장
+                connection.sCard(key); // 3. 개수 조회 (이 결과가 필요함)
             }
-        } catch (Exception e) {
-            log.error("Redis operation failed in PortScanDetector", e);
-            // Redis 장애 시 시스템 전체가 멈추지 않도록 null 반환 (Fail-Open)
+
+            return null;
+        });
+
+        // 3. 결과 분석 (Pipelining 결과는 순서대로 리스트에 담겨 옴)
+        Set<String> attackers = new HashSet<>();
+        int index = 0;
+
+        for (PacketEvent event : candidates) {
+            // 명령 3개를 보냈으니 결과도 3개씩 끊어서 읽어야 함
+            // index: SADD 결과
+            // index+1: EXPIRE 결과
+            Object scardResult = pipelineResults.get(index + 2);// SCARD 결과
+            Object saddResult = pipelineResults.get(index); // SADD 결과
+
+            if (scardResult instanceof Long distinctPorts && saddResult instanceof Long addedCount) {
+                if (distinctPorts == threshold && addedCount > 0) {
+                    attackers.add(event.srcIp());
+                }
+            }
+            index += 3; // 다음 패킷 결과로 이동
         }
-        return null;
+        return attackers;
     }
 }

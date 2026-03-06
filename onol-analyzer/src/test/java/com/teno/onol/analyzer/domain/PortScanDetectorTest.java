@@ -7,9 +7,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.io.Serializable;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
@@ -26,15 +28,10 @@ public class PortScanDetectorTest {
     @Mock
     private StringRedisTemplate redisTemplate;
 
-    @Mock
-    private SetOperations<String, String> setOperations;
-
     private PortScanDetector detector;
 
     @BeforeEach
     void setUp() {
-        when(redisTemplate.opsForSet()).thenReturn(setOperations);
-
         detector = new PortScanDetector(redisTemplate, 5);
     }
 
@@ -47,20 +44,19 @@ public class PortScanDetectorTest {
                 createPacket(attackerIp, 80) // 1개 들어옴
         );
 
-        // Redis Mock 동작 정의
-        // 1. add는 1(새로운 값)을 반환한다고 가정
-        given(setOperations.add(anyString(), anyString())).willReturn(1L);
-        // 2. size를 호출했더니 딱 5개가 되었다고 가정 (임계치 도달)
-        given(setOperations.size("threat:scan:" + attackerIp)).willReturn(5L);
+        // Pipelining 결과 Mocking
+        // 실제 로직: SADD(1), EXPIRE(true), SCARD(5) 순서로 리턴됨
+        // 리스트 구조: [Long(added), Boolean(expired), Long(count)]
+        List<Object> mockPipelineResult = List.of(1L, true, 5L); // 5개 도달 시뮬레이션
+
+        when(redisTemplate.executePipelined(any(RedisCallback.class)))
+                .thenReturn(mockPipelineResult);
 
         // when
         Set<String> detectedIps = detector.detectScanners(packets);
 
         // then
         assertThat(detectedIps).contains(attackerIp);
-
-        // Redis 만료 시간 설정이 호출되었는지 검증 (Stateful의 핵심)
-        verify(redisTemplate).expire(eq("threat:scan:" + attackerIp), any(Duration.class));
     }
 
     @Test
@@ -70,9 +66,11 @@ public class PortScanDetectorTest {
         String attackerIp = "1.2.3.4";
         List<PacketEvent> packets = List.of(createPacket(attackerIp, 443));
 
-        given(setOperations.add(anyString(), anyString())).willReturn(1L);
-        // 이미 6개째 포트가 쌓여있음
-        given(setOperations.size("threat:scan:" + attackerIp)).willReturn(6L);
+        // Pipelining 결과 Mocking (이미 6개)
+        List<Object> mockPipelineResult = List.of(1L, true, 6L);
+
+        when(redisTemplate.executePipelined(any(RedisCallback.class)))
+                .thenReturn(mockPipelineResult);
 
         // when
         Set<String> detectedIps = detector.detectScanners(packets);

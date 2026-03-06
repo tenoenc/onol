@@ -16,6 +16,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
@@ -89,14 +90,15 @@ class PacketServiceTest {
         when(resolveGeoIpPort.resolveCountryCode(anyString())).thenReturn("KR");
 
         // Redis에 기존 상태가 없다고 가정
-        when(manageSessionStatePort.getSessionState(anyString())).thenReturn(null);
+        when(manageSessionStatePort.getSessionStates(anyList()))
+                .thenReturn(Collections.emptyMap());
 
         // when
         packetService.recordPackets(List.of(tcpPacket));
 
         // then
-        // 트래커가 계산한 결과('SYN_SENT')를 Redis 포트에 저장했는지 검증
+        // updateSessionStates가 호출되었고, 그 인자(Map) 안에 'SYN_SENT'가 들어있는지 확인
         verify(manageSessionStatePort, times(1))
-                .updateSessionState(anyString(), eq("SYN_SENT"));
+                .updateSessionStates(argThat(map -> map.containsValue("SYN_SENT")));
     }
 }
