@@ -10,4 +10,11 @@ public interface ManageSessionStatePort {
     void updateSessionStates(Map<String, String> updates);
     void removeSessionState(String flowKey);
     void removeSessionStates(List<String> flowKeys);
+
+    /**
+     * 여러 Flow의 패킷 카운트를 1씩 증가시키고, 증가된 값을 반환함 (Atomic Increment)
+     * @param flowKeys 카운트를 증가시킬 Flow Key 목록
+     * @return Key별 누적 패킷 수 (예: "flow:key" -> 15)
+     */
+    Map<String, Long> incrementPacketCounts(List<String> flowKeys);
 }

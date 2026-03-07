@@ -92,4 +92,36 @@ public class RedisSessionStateAdapter implements ManageSessionStatePort {
         // delete(Collection)은 Redis의 'DEL k1 k2 k3 ...' 명령어로 변환되어 전송됨 (매우 빠름)
         redisTemplate.delete(fullKeys);
     }
+
+    @Override
+    public Map<String, Long> incrementPacketCounts(List<String> flowKeys) {
+        if (flowKeys.isEmpty()) return Collections.emptyMap();
+
+        List<Object> results = redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
+            RedisSerializer<String> serializer = redisTemplate.getStringSerializer();
+
+            for (String key : flowKeys) {
+                byte[] rawKey = serializer.serialize(KEY_PREFIX + "count:" + key); // 키 분리 (flow:count...)
+
+                // 1. 카운트 증가 (INCR)
+                connection.stringCommands().incr(rawKey);
+
+                // 2. 만료 시간 설정 (세션이랑 동일하게 유지)
+                connection.keyCommands().expire(rawKey, SESSION_TTL.getSeconds());
+            }
+            return null;
+        });
+
+        // 결과 파싱 (Pipelining 결과는 [INCR결과, EXPIRE결과, INCR결과, EXPIRE결과 ...] 순서임)
+        Map<String, Long> counts = new HashMap<>();
+        for (int i = 0; i < flowKeys.size(); i++) {
+            // 결과 리스트에서 2칸씩 뛰면서 INCR 결과값(Long)만 가져옴
+            Object incResult = results.get(i * 2);
+            if (incResult instanceof Long count) {
+                counts.put(flowKeys.get(i), count);
+            }
+        }
+
+        return counts;
+    }
 }
