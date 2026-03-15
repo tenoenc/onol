@@ -25,13 +25,12 @@ import java.util.*;
 @RequiredArgsConstructor
 public class PacketService implements RecordPacketUseCase {
 
-    private final SavePacketLogPort savePacketLogPort;
-    private final ResolveGeoIpPort resolveGeoIpPort;
     private final RecordRealtimeMetricPort recordRealtimeMetricPort;
     private final PortScanDetector portScanDetector;
     private final TcpSessionTracker tcpSessionTracker;
     private final ManageSessionStatePort sessionStatePort;
     private final ApplicationEventPublisher eventPublisher;
+    private final PacketLogWorker packetLogWorker;
 
     @Override
     @Transactional
@@ -40,63 +39,16 @@ public class PacketService implements RecordPacketUseCase {
         recordRealtimeMetricPort.incrementMetrics(events);
 
         // 2. 위협 탐지 (Port Scan)
+        // 보안 알림은 즉시 나가야 함 (동기)
         detectThreats(events);
 
         // 3. 세션 추적
+        // 상태 전이(SYN->EST)는 순서가 중요함 (동기)
         trackSessions(events);
 
         // 4. 스마트 필터링 및 저장
-        List<PacketLog> logsToSave = filterAndMapPackets(events);
-
-        // 5. 선별된 로그만 DB 저장
-        if (!logsToSave.isEmpty()) {
-            savePacketLogPort.saveAll(logsToSave);
-        }
-    }
-
-    private List<PacketLog> filterAndMapPackets(List<PacketEvent> events) {
-        // A. 카운트 조회를 위한 키 생성 (TCP만 대상)
-        List<String> tcpKeys = events.stream()
-                .filter(e -> "TCP".equalsIgnoreCase(e.protocol()))
-                .map(tcpSessionTracker::generateFlowKey)
-                .toList();
-
-        // B. Redis Bulk Increment (한 번에 카운트 증가 및 조회)
-        Map<String, Long> packetCounts = sessionStatePort.incrementPacketCounts(tcpKeys);
-
-        List<PacketLog> result = new ArrayList<>();
-        int tcpIndex = 0;
-
-        for (PacketEvent event : events) {
-            boolean shouldSave = false;
-
-            if ("TCP".equalsIgnoreCase(event.protocol())) {
-                String key = tcpKeys.get(tcpIndex++);
-                Long count = packetCounts.getOrDefault(key, 0L);
-                int flags = event.tcpFlags();
-
-                // [규칙 1] 제어 패킷(SYN, FIN, RST)은 무조건 저장
-                if ((flags & (PacketEvent.FLAG_SYN | PacketEvent.FLAG_FIN | PacketEvent.FLAG_RST)) != 0) {
-                    shouldSave = true;
-                }
-
-                // [규칙 2] 초반 10개 패킷(Head)은 문맥 파악을 위해 저장 (HTTP 헤더 등 포함)
-                else if (count <= 10) {
-                    shouldSave = true;
-                }
-                // [규칙 3] 그 외(Tail) 데이터 덩어리는 과감히 버림 (단, 메트릭에는 이미 반영됨)
-            } else {
-                // UDP/ICMP 등은 일단 다 저장 (양이 상대적으로 적음)
-                // 필요시 여기도 필터링 추가 기능
-                shouldSave = true;
-            }
-
-            if (shouldSave) {
-                // GeoIP Enrichment
-                result.add(enrichAndMapToDomain(event));
-            }
-        }
-        return result;
+        // 메인 스레드는 여기서 블로킹되지 않고 즉시 리턴됨 (비동기)
+        packetLogWorker.filterAndSaveAsync(events);
     }
 
     private void trackSessions(List<PacketEvent> events) {
@@ -149,30 +101,4 @@ public class PacketService implements RecordPacketUseCase {
             ));
         }
     }
-
-    private PacketLog enrichAndMapToDomain(PacketEvent event) {
-        // 1. GeoIP Enrichment
-        String country = resolveGeoIpPort.resolveCountryCode(event.srcIp());
-        if ("INT".equals(country) || country == null) {
-            country = resolveGeoIpPort.resolveCountryCode(event.dstIp());
-        }
-
-        // 2. Map to Domain
-        return PacketLog.builder()
-                .time(event.timestamp().atZone(ZoneId.of("UTC")).toOffsetDateTime())
-                .srcIp(event.srcIp())
-                .dstIp(event.dstIp())
-                .srcPort(event.srcPort())
-                .dstPort(event.dstPort())
-                .protocol("TCP".equalsIgnoreCase(event.protocol()) ? 6 :
-                        "UDP".equalsIgnoreCase(event.protocol()) ? 17 : 0)
-                .tcpFlags(event.tcpFlags())
-                .payloadLen(event.payloadLen())
-                .payload(event.payload())
-                .domainName(event.domainName())
-                .countryCode(country)
-                .build();
-    }
-
-
 }
