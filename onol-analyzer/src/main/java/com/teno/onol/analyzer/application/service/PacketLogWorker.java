@@ -31,6 +31,8 @@ public class PacketLogWorker {
      */
     @Async("packetLogExecutor")
     public void filterAndSaveAsync(List<PacketEvent> events) {
+        long start = System.currentTimeMillis();
+
         try {
             // 1. 스마트 필터링
             List<PacketLog> logsToSave = filterAndMapPackets(events);
@@ -39,6 +41,30 @@ public class PacketLogWorker {
             if (!logsToSave.isEmpty()) {
                 savePacketLogPort.saveAll(logsToSave);
             }
+
+            long duration = System.currentTimeMillis() - start;
+
+            // 3. 프로토콜별 상세 통계 집계
+            int inputCount = events.size();
+            int savedCount = logsToSave.size();
+            double reductionRate = inputCount > 0 ? 100.0 - ((double) savedCount / inputCount * 100.0) : 0.0;
+
+            // Input 통계 (PacketEvent는 String 프로토콜)
+            long tcpInput = events.stream().filter(e -> "TCP".equalsIgnoreCase(e.protocol())).count();
+            long udpInput = events.stream().filter(e -> "UDP".equalsIgnoreCase(e.protocol())).count();
+
+            // Saved 통계 (PacketLog는 int 프로토콜: TCP=6, UDP=17)
+            long tcpSaved = logsToSave.stream().filter(l -> l.getProtocol() == 6).count();
+            long udpSaved = logsToSave.stream().filter(l -> l.getProtocol() == 17).count();
+
+            // 4. 상세 로그 출력
+            log.info("[Async] Batch: {} -> Saved: {} (TCP: {}/{} | UDP: {}/{}) | ↓{}% Reduced | Time: {}ms",
+                    inputCount,
+                    savedCount,
+                    tcpSaved, tcpInput,
+                    udpSaved, udpInput,
+                    String.format("%.1f", reductionRate),
+                    duration);
         } catch (Exception e) {
             log.error("Async Packet Save Failed", e);
         }
