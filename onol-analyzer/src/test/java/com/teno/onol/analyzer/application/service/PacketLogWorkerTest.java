@@ -36,81 +36,78 @@ class PacketLogWorkerTest {
     private PacketLogWorker packetLogWorker;
 
     @Test
-    @DisplayName("섞인 배치가 들어왔을 때 중요한 패킷(Head, Control, UDP)만 골라서 저장해야 한다")
-    void should_SaveOnlyImportantPackets_When_MixedBatchReceived() {
-        // 각 패킷의 srcPort를 다르게 해서 서로 다른 Flow Key가 생성되도록 유도
-
+    @DisplayName("TCP 필터링: 제어 패킷이나 초반 10개 패킷은 저장하고, 단순 데이터 패킷(Tail)은 버려야 한다")
+    void should_SaveOnlyImportantTcpPackets_When_TcpBatchReceived() {
         // given
-        // Case 1: [Head] 이제 막 시작한 패킷 (Count: 1) -> 저장 대상
-        PacketEvent headPacket = PacketEvent.builder()
-                .srcIp("1.1.1.1").dstPort(80).srcPort(10001)
-                .protocol("TCP")
-                .timestamp(Instant.now())
-                .build();
+        PacketEvent head = PacketEvent.builder().protocol("TCP").srcPort(10001).timestamp(Instant.now()).build();
+        PacketEvent tailData = PacketEvent.builder().protocol("TCP").srcPort(10002).timestamp(Instant.now()).build();
+        PacketEvent tailFin = PacketEvent.builder().protocol("TCP").srcPort(10003).tcpFlags(PacketEvent.FLAG_FIN)
+                .timestamp(Instant.now()).build();
 
-        // Case 2: [Tail & Noise] 이미 많이 보낸 데이터 패킷 (Count: 11) -> 삭제 대상
-        PacketEvent tailDataPacket = PacketEvent.builder()
-                .srcIp("1.1.1.1").dstPort(80).srcPort(10002)
-                .protocol("TCP")
-                .timestamp(Instant.now())
-                .build();
+        List<PacketEvent> batch = List.of(head, tailData, tailFin);
 
-        // Case 3: [Tail & Control] 많이 보냈지만 연결 종료 패킷 (Count: 100 + FIN) -> 저장 대상
-        PacketEvent tailControlPacket = PacketEvent.builder()
-                .srcIp("1.1.1.1").dstPort(80).srcPort(10003)
-                .protocol("TCP")
-                .tcpFlags(PacketEvent.FLAG_FIN)
-                .timestamp(Instant.now())
-                .build();
-
-        // Case 4: [UDP] TCP가 아닌 패킷 -> 무조건 저장 대상
-        PacketEvent udpPacket = PacketEvent.builder()
-                .srcIp("1.1.1.1").dstPort(53).protocol("UDP")
-                .timestamp(Instant.now())
-                .build();
-
-        List<PacketEvent> batch = List.of(headPacket, tailDataPacket, tailControlPacket, udpPacket);
-
-        // GeoIP Stubbing
-        when(resolveGeoIpPort.resolveCountryCode(any())).thenReturn("KR");
-
-        // Redis가 알려주는 누적 패킷 수 시뮬레이션
-        // 순서대로: 1(Head), 11(Tail), 100(Tail) 리턴
-
-        // 실제 구현에선 키가 각각 다르겠지만, 테스트에선 키 생성 로직을 타서 나온 키에 매핑해줌
-        // 여기서는 편의상 서비스가 내부적으로 키를 생성했으므로,
-        // incrementPacketCounts가 호출될 때 기대하는 카운트 맵을 리턴하도록 설정
-        when(sessionStatePort.incrementPacketCounts(anyList())).thenAnswer(invocation -> {
-            List<String> keys = invocation.getArgument(0);
-            Map<String, Long> result = new HashMap<>();
-
-            // 입력된 키 순서대로 카운트 매핑
-            // keys[0]: headPacket (Port 10001) -> 1L
-            // keys[1]: tailDataPacket (Port 10002) -> 11L
-            // keys[2]: tailControlPacket (Port 10003) -> 100L
-            if (keys.size() >= 3) {
-                result.put(keys.get(0), 1L);
-                result.put(keys.get(1), 11L);
-                result.put(keys.get(2), 100L);
-            }
-            return result;
-        });
+        // Redis Count Mocking: Head(1), TailData(11), TailFin(100)
+        mockPacketCounts(List.of(1L, 11L, 100L));
 
         // when
         packetLogWorker.filterAndSaveAsync(batch);
 
         // then
-        // saveAll에 전달된 리스트를 캡처해서 검증
-        verify(savePacketLogPort, times(1)).saveAll(argThat(logs -> {
-            // 총 4개 중 1개(tailDataPacket)는 버려지고 3개만 남아야 함
-            if (logs.size() != 3) return false;
+        verify(savePacketLogPort).saveAll(argThat(logs -> {
+            boolean hasHead = logs.stream().anyMatch(l -> l.getSrcPort() == 10001);
+            boolean hasFin = logs.stream().anyMatch(l -> l.getSrcPort() == 10003);
+            boolean hasTailData = logs.stream().anyMatch(l -> l.getSrcPort() == 10002);
 
-            // 남은 것들이 기대한 저장 대상인지 확인
-            boolean hasHead = logs.stream().anyMatch(l -> l.getSrcPort() == 10001); // headPacket
-            boolean hasFin = logs.stream().anyMatch(l -> l.getSrcPort() == 10003); // tailControlPacket
-            boolean hasUdp = logs.stream().anyMatch(l -> l.getProtocol() == 17); // udpPacket
-
-            return hasHead && hasFin && hasUdp;
+            // Tail Data만 없어야 함
+            return hasHead && hasFin && !hasTailData && logs.size() == 2;
         }));
+    }
+
+    @Test
+    @DisplayName("UDP 필터링: DNS나 초반 10개 패킷은 저장하고, 10개 이후의 스트리밍 데이터는 버려야 한다")
+    void should_SaveOnlyImportantUdpPackets_When_UdpBatchReceived() {
+        // given
+        // 1. DNS (Port 53) -> 카운트가 많아도(100) 무조건 저장
+        PacketEvent dns = PacketEvent.builder().protocol("UDP").dstPort(53).srcPort(20001).timestamp(Instant.now()).build();
+
+        // 2. New Stream (QUIC Start) -> 카운트 적음(1) -> 저장
+        PacketEvent quicHead = PacketEvent.builder().protocol("UDP").dstPort(443).srcPort(20002).timestamp(Instant.now()).build();
+
+        // 3. Heavy Stream (YouTube Data) -> 카운트 많음(100) -> 버림
+        PacketEvent quicTail = PacketEvent.builder().protocol("UDP").dstPort(443).srcPort(20003).timestamp(Instant.now()).build();
+
+        List<PacketEvent> batch = List.of(dns, quicHead, quicTail);
+
+        // Redis Count Mocking: DNS(100), Head(1), Tail(100)
+        mockPacketCounts(List.of(100L, 1L, 100L));
+
+        // when
+        packetLogWorker.filterAndSaveAsync(batch);
+
+        // then
+        verify(savePacketLogPort).saveAll(argThat(logs -> {
+            boolean hasDns = logs.stream().anyMatch(l -> l.getSrcPort() == 20001);
+            boolean hasHead = logs.stream().anyMatch(l -> l.getSrcPort() == 20002);
+            boolean hasTail = logs.stream().anyMatch(l -> l.getSrcPort() == 20003);
+
+            // Tail만 없어야 함
+            return hasDns && hasHead && !hasTail && logs.size() == 2;
+        }));
+    }
+
+    // 순서대로 카운트를 반환하도록 Mock 설정
+    private void mockPacketCounts(List<Long> counts) {
+        when(resolveGeoIpPort.resolveCountryCode(any())).thenReturn("KR"); // GeoIP는 기본 설정
+
+        when(sessionStatePort.incrementPacketCounts(anyList())).thenAnswer(invocation -> {
+            List<String> keys = invocation.getArgument(0);
+            Map<String, Long> result = new HashMap<>();
+            for (int i = 0; i < keys.size(); i++) {
+                if (i < counts.size()) {
+                    result.put(keys.get(i), counts.get(i));
+                }
+            }
+            return result;
+        });
     }
 }

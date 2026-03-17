@@ -45,32 +45,54 @@ public class PacketLogWorker {
     }
 
     private List<PacketLog> filterAndMapPackets(List<PacketEvent> events) {
-        List<String> tcpKeys = events.stream()
-                .filter(e -> "TCP".equalsIgnoreCase(e.protocol()))
-                .map(tcpSessionTracker::generateFlowKey)
+        List<String> flowKeys = events.stream()
+                .filter(e -> "TCP".equalsIgnoreCase(e.protocol()) || "UDP".equalsIgnoreCase(e.protocol()))
+                .map(tcpSessionTracker::generateFlowKey) // UDP도 IP:Port 쌍으로 키 생성 가능
                 .toList();
 
-        Map<String, Long> packetCounts = sessionStatePort.incrementPacketCounts(tcpKeys);
+        Map<String, Long> packetCounts = sessionStatePort.incrementPacketCounts(flowKeys);
 
         List<PacketLog> result = new ArrayList<>();
-        int tcpIndex = 0;
+        int keyIndex = 0;
 
         for (PacketEvent event : events) {
             boolean shouldSave = false;
+            boolean isTcp = "TCP".equalsIgnoreCase(event.protocol());
+            boolean isUdp = "UDP".equalsIgnoreCase(event.protocol());
 
-            if ("TCP".equalsIgnoreCase(event.protocol())) {
-                String key = tcpKeys.get(tcpIndex++);
+            if (isTcp || isUdp) {
+                String key = flowKeys.get(keyIndex++);
                 Long count = packetCounts.getOrDefault(key, 0L);
-                int flags = event.tcpFlags();
 
-                if ((flags & (PacketEvent.FLAG_SYN | PacketEvent.FLAG_FIN | PacketEvent.FLAG_RST)) != 0) {
-                    shouldSave = true;
-                }
+                if (isTcp) {
+                    int flags = event.tcpFlags();
 
-                else if (count <= 10) {
-                    shouldSave = true;
+                    // [규칙 1] 제어 패킷(SYN, FIN, RST)은 무조건 저장
+                    if ((flags & (PacketEvent.FLAG_SYN | PacketEvent.FLAG_FIN | PacketEvent.FLAG_RST)) != 0) {
+                        shouldSave = true;
+                    }
+
+                    // [규칙 2] 초반 10개 패킷(Head)은 문맥 파악을 위해 저장 (HTTP 헤더 등 포함)
+                    else if (count <= 10) {
+                        shouldSave = true;
+                    }
+                    // [규칙 3] 그 외(Tail) 데이터 덩어리는 과감히 버림 (단, 메트릭에는 이미 반영됨)
+                } else {
+                    // UDP 필터링 로직
+                    // QUIC는 제어 플래그가 없으므로 순수하게 카운트로만 판단
+                    // DNS(53)나 NTP(123) 같은 저용량 프로토콜은 계속 저장해도 됨
+
+                    // [규칙 4] DNS는 중요하니까 저장
+                    if (event.dstPort() == 53 || event.srcPort() == 53) {
+                        shouldSave = true;
+                    }
+                    // [규칙 5] 스트리밍 데이터 덩어리는 10개 이후 버림
+                    else if (count <= 10) {
+                        shouldSave = true;
+                    }
                 }
             } else {
+                // ICMP 등 기타 프로토콜은 저장
                 shouldSave = true;
             }
 
