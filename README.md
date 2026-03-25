@@ -48,6 +48,8 @@
 
 데이터의 정합성과 효율적인 처리를 보장하기 위해 **이벤트 구동형 헥사고날 아키텍처**를 기반으로 설계되었습니다.
 
+<img width="2712" height="3660" alt="Image" src="https://github.com/user-attachments/assets/53703a7f-78ab-4a9a-b63c-b7488797386f" />
+
 ### 수집과 분석의 물리적 분리 (Collector-Analyzer)
 
   * **Collector**: `Pcap4j` 기반의 수집기가 패킷을 캡처한 후 최소한의 노이즈 필터링을 거쳐 Kafka로 전송함으로써 수집 스레드의 부하를 최소화합니다.
